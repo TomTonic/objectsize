@@ -9,6 +9,11 @@ import (
 	"unsafe"
 )
 
+type stringHeader struct {
+	data uintptr
+	len  int
+}
+
 // Of returns the size of 'v' in bytes.
 // If there is an error during calculation, Of returns -1.
 func Of(v interface{}) int {
@@ -75,11 +80,11 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) int {
 
 	case reflect.String:
 		s := v.String()
-		hdr := (*reflect.StringHeader)(unsafe.Pointer(&s))
-		if cache[hdr.Data] {
+		data := (*stringHeader)(unsafe.Pointer(&s)).data
+		if cache[data] {
 			return int(v.Type().Size())
 		}
-		cache[hdr.Data] = true
+		cache[data] = true
 		return len(s) + int(v.Type().Size())
 
 	case reflect.Ptr:
