@@ -1,5 +1,5 @@
-// Package size implements run-time calculation of size of the variable.
-// Source code is based on "binary.Size()" function from Go standard library.
+// Package objectsize implements run-time calculation of size of an object (-tree) in Go.
+// The source code is based on the "binary.Size()" function from Go standard library.
 // size.Of() omits size of slices, arrays and maps containers itself (24, 24 and 8 bytes).
 // When counting maps separate calculations are done for keys and values.
 package objectsize
@@ -96,38 +96,41 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 }
 
 func sizeOfInterface(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	interfaceSize := uint64(v.Type().Size())
 	s, err := sizeOf(v.Elem(), cache)
 	if err != nil {
 		return 0, err
 	}
-	return s + uint64(v.Type().Size()), nil
+	return s + interfaceSize, nil
 }
 
 func sizeOfPointer(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
-	sizeOfPointer := uint64(v.Type().Size())
+	pointerSize := uint64(v.Type().Size())
 	if v.IsNil() {
-		return sizeOfPointer, nil
+		return pointerSize, nil
 	}
-
 	if cache[v.Pointer()] {
-		return sizeOfPointer, nil
+		// we already visited this object, do not visit it again
+		return pointerSize, nil
 	}
 	cache[v.Pointer()] = true
 	s, err := sizeOf(reflect.Indirect(v), cache)
 	if err != nil {
 		return 0, err
 	}
-	return (s + sizeOfPointer), nil
+	return s + pointerSize, nil
 }
 
 func sizeOfString(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	stringSize := uint64(v.Type().Size())
 	s := v.String()
 	data := (*stringHeader)(unsafe.Pointer(&s)).data
 	if cache[data] {
-		return uint64(v.Type().Size()), nil
+		// there is a backing data array that has already been used. don't count it again
+		return stringSize, nil
 	}
 	cache[data] = true
-	return uint64(len(s)) + uint64(v.Type().Size()), nil
+	return uint64(len(s)) + stringSize, nil
 }
 
 func sizeOfStruct(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
@@ -149,8 +152,9 @@ func sizeOfStruct(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 }
 
 func sizeOfSlice(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	sliceSize := uint64(v.Type().Size())
 	if cache[v.Pointer()] {
-		return uint64(v.Type().Size()), nil
+		return sliceSize, nil
 	}
 	cache[v.Pointer()] = true
 
@@ -164,7 +168,7 @@ func sizeOfSlice(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 	}
 
 	sum += uint64(v.Cap()-v.Len()) * uint64(v.Type().Elem().Size())
-	result := sum + uint64(v.Type().Size())
+	result := sum + sliceSize
 	return result, nil
 }
 
@@ -177,6 +181,6 @@ func sizeOfArray(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 		}
 		sum += s
 	}
-	result := sum + uint64(v.Cap()-v.Len())*uint64(v.Type().Elem().Size())
-	return result, nil
+	sum += uint64(v.Cap()-v.Len()) * uint64(v.Type().Elem().Size())
+	return sum, nil
 }
