@@ -2,9 +2,10 @@
 // Source code is based on "binary.Size()" function from Go standard library.
 // size.Of() omits size of slices, arrays and maps containers itself (24, 24 and 8 bytes).
 // When counting maps separate calculations are done for keys and values.
-package size
+package objectsize
 
 import (
+	"errors"
 	"reflect"
 	"unsafe"
 )
@@ -15,92 +16,94 @@ type stringHeader struct {
 }
 
 // Of returns the size of 'v' in bytes.
-// If there is an error during calculation, Of returns -1.
-func Of(v interface{}) int {
+// Returns 0 and error!=nil if there is an error during calculation.
+func Of(v interface{}) (uint64, error) {
 	// Cache with every visited pointer so we don't count two pointers
 	// to the same memory twice.
 	cache := make(map[uintptr]bool)
-	return sizeOf(reflect.Indirect(reflect.ValueOf(v)), cache)
+	result, err := sizeOf(reflect.Indirect(reflect.ValueOf(v)), cache)
+	return result, err
 }
 
 // sizeOf returns the number of bytes the actual data represented by v occupies in memory.
 // If there is an error, sizeOf returns -1.
-func sizeOf(v reflect.Value, cache map[uintptr]bool) int {
+func sizeOf(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 	switch v.Kind() {
 
 	case reflect.Array:
-		sum := 0
+		var sum uint64
 		for i := 0; i < v.Len(); i++ {
-			s := sizeOf(v.Index(i), cache)
-			if s < 0 {
-				return -1
+			s, err := sizeOf(v.Index(i), cache)
+			if err != nil {
+				return 0, err
 			}
 			sum += s
 		}
 
-		return sum + (v.Cap()-v.Len())*int(v.Type().Elem().Size())
+		return sum + uint64(v.Cap()-v.Len())*uint64(v.Type().Elem().Size()), nil
 
 	case reflect.Slice:
 		// return Slice size if this node has been visited already
 		if cache[v.Pointer()] {
-			return int(v.Type().Size())
+			return uint64(v.Type().Size()), nil
 		}
 		cache[v.Pointer()] = true
 
-		sum := 0
+		var sum uint64
 		for i := 0; i < v.Len(); i++ {
-			s := sizeOf(v.Index(i), cache)
-			if s < 0 {
-				return -1
+			s, err := sizeOf(v.Index(i), cache)
+			if err != nil {
+				return 0, err
 			}
 			sum += s
 		}
 
-		sum += (v.Cap() - v.Len()) * int(v.Type().Elem().Size())
+		sum += uint64(v.Cap()-v.Len()) * uint64(v.Type().Elem().Size())
 
-		return sum + int(v.Type().Size())
+		return sum + uint64(v.Type().Size()), nil
 
 	case reflect.Struct:
-		sum := 0
+		var sum uint64
 		for i, n := 0, v.NumField(); i < n; i++ {
-			s := sizeOf(v.Field(i), cache)
-			if s < 0 {
-				return -1
+			s, err := sizeOf(v.Field(i), cache)
+			if err != nil {
+				return 0, err
 			}
 			sum += s
 		}
 
 		// Look for struct padding.
-		padding := int(v.Type().Size())
+		padding := uint64(v.Type().Size())
 		for i, n := 0, v.NumField(); i < n; i++ {
-			padding -= int(v.Field(i).Type().Size())
+			padding -= uint64(v.Field(i).Type().Size())
 		}
 
-		return sum + padding
+		return (sum + padding), nil
 
 	case reflect.String:
 		s := v.String()
 		data := (*stringHeader)(unsafe.Pointer(&s)).data
 		if cache[data] {
-			return int(v.Type().Size())
+			return uint64(v.Type().Size()), nil
 		}
 		cache[data] = true
-		return len(s) + int(v.Type().Size())
+		return uint64(len(s)) + uint64(v.Type().Size()), nil
 
-	case reflect.Ptr:
-		// return Ptr size if this node has been visited already (infinite recursion)
+	case reflect.Pointer:
+		sizeOfPointer := uint64(v.Type().Size())
+		if v.IsNil() {
+			return sizeOfPointer, nil
+		}
+		// return Ptr size if this node has been visited already (break infinite recursion)
 		if cache[v.Pointer()] {
-			return int(v.Type().Size())
+			return sizeOfPointer, nil
 		}
 		cache[v.Pointer()] = true
-		if v.IsNil() {
-			return int(reflect.New(v.Type()).Type().Size())
+		s, err := sizeOf(reflect.Indirect(v), cache)
+		if err != nil {
+			return 0, err
 		}
-		s := sizeOf(reflect.Indirect(v), cache)
-		if s < 0 {
-			return -1
-		}
-		return s + int(v.Type().Size())
+		return (s + sizeOfPointer), nil
 
 	case reflect.Bool,
 		reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
@@ -110,38 +113,43 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) int {
 		reflect.Uintptr,
 		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
 		reflect.Func:
-		return int(v.Type().Size())
+		return uint64(v.Type().Size()), nil
 
 	case reflect.Map:
 		// return 0 if this node has been visited already (infinite recursion)
 		if cache[v.Pointer()] {
-			return 0
+			return 0, nil
 		}
 		cache[v.Pointer()] = true
-		sum := 0
+		var sum uint64
 		keys := v.MapKeys()
 		for i := range keys {
 			val := v.MapIndex(keys[i])
 			// calculate size of key and value separately
-			sv := sizeOf(val, cache)
-			if sv < 0 {
-				return -1
+			sv, err := sizeOf(val, cache)
+			if err != nil {
+				return 0, err
 			}
 			sum += sv
-			sk := sizeOf(keys[i], cache)
-			if sk < 0 {
-				return -1
+			sk, err := sizeOf(keys[i], cache)
+			if err != nil {
+				return 0, err
 			}
 			sum += sk
 		}
 		// Include overhead due to unused map buckets.  10.79 comes
 		// from https://golang.org/src/runtime/map.go.
-		return sum + int(v.Type().Size()) + int(float64(len(keys))*10.79)
+		return (sum + uint64(v.Type().Size()) + uint64(float64(len(keys))*10.79)), nil
 
 	case reflect.Interface:
-		return sizeOf(v.Elem(), cache) + int(v.Type().Size())
+		s, err := sizeOf(v.Elem(), cache)
+		if err != nil {
+			return 0, err
+		}
+		return s + uint64(v.Type().Size()), nil
 
 	}
 
-	return -1
+	// can currently only be reflect.Invalid or reflect.UnsafePointer, see type.go
+	return 0, errors.New("unimplemented kind: " + v.Kind().String())
 }

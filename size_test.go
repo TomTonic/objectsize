@@ -1,22 +1,51 @@
-package size
+package objectsize
 
 import (
 	"testing"
-
-	"github.com/golang/groupcache/lru"
 )
+
+type nodeType struct {
+	value int       // 4 - int
+	next  *nodeType // 8 - pointer
+	// 4 - padding
+}
+
+type typeWithFunc struct {
+	a   int
+	foo func(param int)
+	b   int
+}
 
 func TestOf(t *testing.T) {
 	ss := make([][]string, 100, 100) // 100 * 24 + 24
 	s := make([]string, 1)           // 24
 	s[0] = "1234"                    // 16 + 4
+	n2 := nodeType{
+		value: 2,
+	}
+	n1 := nodeType{
+		value: 1,
+		next:  &n2,
+	}
+	n0 := nodeType{
+		value: 0,
+		next:  &n1,
+	}
+	n2.next = &n1
+	n3 := nodeType{
+		value: 3,
+	}
+	n4 := nodeType{
+		value: 4,
+		next:  &n3,
+	}
 	for i := range ss {
 		ss[i] = s
 	} // 24 + 16 + 4 + 99 * 24 + 24 = 2444
 	tests := []struct {
 		name string
 		v    interface{}
-		want int
+		want uint64
 	}{
 		{
 			name: "Array",
@@ -64,10 +93,11 @@ func TestOf(t *testing.T) {
 		},
 		{
 			name: "Struct With Func",
-			v: lru.Cache{
-				MaxEntries: 0,   // 8
-				OnEvicted:  nil, // 0
-			}, // + 16 (two more pointers) = 24
+			v: typeWithFunc{
+				a:   5,   // 8 (4+padding)
+				foo: nil, // 8
+				b:   13,  // 8 (4+padding)
+			},
 			want: 24,
 		},
 		{
@@ -86,11 +116,30 @@ func TestOf(t *testing.T) {
 			}, // 2 * 24 + 16 + 4 = 68
 			want: 68,
 		},
+		{
+			name: "Single node",
+			v:    n3,
+			want: 16,
+		},
+		{
+			name: "Two nodes",
+			v:    n4,
+			want: 32,
+		},
+		{
+			name: "Three nodes with cyclic structure",
+			v:    n0,
+			want: 48,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Of(tt.v); got != tt.want {
-				t.Errorf("Of() = %v, want %v", got, tt.want)
+			if got, err := Of(tt.v); err != nil || got != tt.want {
+				if err != nil {
+					t.Errorf("Of() returned an error: %v", err)
+				} else {
+					t.Errorf("Of() = %v, want %v", got, tt.want)
+				}
 			}
 		})
 	}
