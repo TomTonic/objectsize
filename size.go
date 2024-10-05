@@ -114,32 +114,38 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
 		reflect.Func:
 		return uint64(v.Type().Size()), nil
-
-	case reflect.Map:
-		// return 0 if this node has been visited already (infinite recursion)
-		if cache[v.Pointer()] {
-			return 0, nil
-		}
-		cache[v.Pointer()] = true
-		var sum uint64
-		keys := v.MapKeys()
-		for i := range keys {
-			val := v.MapIndex(keys[i])
-			// calculate size of key and value separately
-			sv, err := sizeOf(val, cache)
-			if err != nil {
-				return 0, err
-			}
-			sum += sv
-			sk, err := sizeOf(keys[i], cache)
-			if err != nil {
-				return 0, err
-			}
-			sum += sk
-		}
-		// Include overhead due to unused map buckets.  10.79 comes
-		// from https://golang.org/src/runtime/map.go.
-		return (sum + uint64(v.Type().Size()) + uint64(float64(len(keys))*10.79)), nil
+		/*
+			// the map size calculation is invalid as "10.79" only holds true for maps that are
+			// a) completely full AND
+			// b) keys have 8 byte size AND
+			// c) items have 8 bytes size AND
+			// d) no pointers are involved
+			case reflect.Map:
+				// return 0 if this node has been visited already (infinite recursion)
+				if cache[v.Pointer()] {
+					return 0, nil
+				}
+				cache[v.Pointer()] = true
+				var sum uint64
+				keys := v.MapKeys()
+				for i := range keys {
+					val := v.MapIndex(keys[i])
+					// calculate size of key and value separately
+					sv, err := sizeOf(val, cache)
+					if err != nil {
+						return 0, err
+					}
+					sum += sv
+					sk, err := sizeOf(keys[i], cache)
+					if err != nil {
+						return 0, err
+					}
+					sum += sk
+				}
+				// Include overhead due to unused map buckets.  10.79 comes
+				// from https://golang.org/src/runtime/map.go.
+				return (sum + uint64(v.Type().Size()) + uint64(float64(len(keys))*10.79)), nil
+		*/
 
 	case reflect.Interface:
 		s, err := sizeOf(v.Elem(), cache)
@@ -147,9 +153,8 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 			return 0, err
 		}
 		return s + uint64(v.Type().Size()), nil
-
 	}
 
-	// can currently only be reflect.Invalid or reflect.UnsafePointer, see type.go
+	// can currently only be reflect.Map or reflect.Invalid or reflect.UnsafePointer, see type.go
 	return 0, errors.New("unimplemented kind: " + v.Kind().String())
 }

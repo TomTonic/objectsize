@@ -17,9 +17,12 @@ type typeWithFunc struct {
 }
 
 func TestOf(t *testing.T) {
-	ss := make([][]string, 100, 100) // 100 * 24 + 24
 	s := make([]string, 1)           // 24
+	ss := make([][]string, 100, 100) // 100 * 24 + 24
 	s[0] = "1234"                    // 16 + 4
+	for i := range ss {
+		ss[i] = s
+	} // 24 + 16 + 4 + 99 * 24 + 24 = 2444
 	n2 := nodeType{
 		value: 2,
 	}
@@ -39,9 +42,7 @@ func TestOf(t *testing.T) {
 		value: 4,
 		next:  &n3,
 	}
-	for i := range ss {
-		ss[i] = s
-	} // 24 + 16 + 4 + 99 * 24 + 24 = 2444
+
 	tests := []struct {
 		name string
 		v    interface{}
@@ -63,13 +64,23 @@ func TestOf(t *testing.T) {
 			want: 22,
 		},
 		{
-			name: "Map",
-			// (8 + 3 + 16) + (8 + 4 + 16) = 55
-			// 55 + 8 + 10.79 * 2 = 84
-			v:    map[int64]string{0: "ABC", 1: "DEFG"},
-			want: 84,
+			name: "Two Strings",
+			v:    [2]string{"ABC", "def"}, // 2 * (3 + 16) = 38
+			want: 38,
 		},
 		{
+			name: "Two Equal Strings",
+			v:    [2]string{"ABC", "ABC"}, // 2 * (3 + 16) -3 = 38 -3 = 35
+			want: 35,
+		},
+		/*		{
+					name: "Map",
+					// (8 + 3 + 16) + (8 + 4 + 16) = 55
+					// 55 + 8 + 10.79 * 2 = 84
+					v:    map[int64]string{0: "ABC", 1: "DEFG"},
+					want: 84,
+				},
+		*/{
 			name: "Struct",
 			v: struct {
 				slice     []int64
@@ -131,6 +142,29 @@ func TestOf(t *testing.T) {
 			v:    n0,
 			want: 48,
 		},
+		{
+			name: "Interface in Array",
+			v:    [4]interface{}{1, 2, 3, 4}, // 4 * (8+16) = 96
+			want: 96,
+		},
+		{
+			name: "Interface in Slice",
+			v:    []interface{}{12345, 67890}, // 2 * (8+16) + 24 = 72
+			want: 72,
+		},
+		{
+			name: "Interface in Struct",
+			v: struct {
+				a uint64
+				b interface{}
+				c interface{}
+			}{
+				a: 5,     // 8
+				b: 13,    // 16 + 8 = 24
+				c: "abc", // 16 + 3 * 1 + 16 = 35
+			},
+			want: 67,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -140,6 +174,52 @@ func TestOf(t *testing.T) {
 				} else {
 					t.Errorf("Of() = %v, want %v", got, tt.want)
 				}
+			}
+		})
+	}
+}
+
+func TestOfInvalid(t *testing.T) {
+	var interfaceVar interface{}
+	tests := []struct {
+		name string
+		v    interface{}
+	}{
+		{
+			name: "Single",
+			v:    interfaceVar,
+		},
+		{
+			name: "Array",
+			v:    [3]interface{}{1, 2, interfaceVar},
+		},
+		{
+			name: "Slice",
+			v:    []interface{}{1, 2, interfaceVar},
+		},
+		{
+			name: "Struct",
+			v: struct {
+				a int
+				b interface{}
+			}{
+				a: 5,
+				b: interfaceVar,
+			},
+		},
+		{
+			name: "Pointer",
+			v: struct {
+				a *interface{}
+			}{
+				a: &interfaceVar,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Of(tt.v); err == nil {
+				t.Errorf("Of() returned no error")
 			}
 		})
 	}
