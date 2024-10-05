@@ -1,10 +1,11 @@
 # size - calculates variable's memory consumption at runtime
 
-Sometimes you may need a tool to measure the size of object in your Go program at runtime. This package makes an attempt to do so. Package based on `binary.Size()` from Go standard library.
+Sometimes you may need a tool to calculate the size of an object (-tree) in your Go program at runtime. This package makes an attempt to do so.
+The original package is based on `binary.Size()` from Go standard library.
 
 Features:
 
-- supports non-fixed size variables and struct fields: `struct`, `int`, `slice`, `string`, `map`;
+- supports non-fixed size variables and struct fields: `struct`, `int`, `slice`, `string`, ~~map~~;
 - supports complex types including structs with non-fixed size fields;
 - supports all basic types (numbers, bool);
 - supports `chan` and `interface`;
@@ -19,8 +20,7 @@ package main
 import (
     "fmt"
 
-    // Use latest tag.
-    "github.com/DmitriyVTitov/size"
+    "github.com/TomTonic/objectsize"
 )
 
 func main() {
