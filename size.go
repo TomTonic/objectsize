@@ -31,79 +31,19 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 	switch v.Kind() {
 
 	case reflect.Array:
-		var sum uint64
-		for i := 0; i < v.Len(); i++ {
-			s, err := sizeOf(v.Index(i), cache)
-			if err != nil {
-				return 0, err
-			}
-			sum += s
-		}
-
-		return sum + uint64(v.Cap()-v.Len())*uint64(v.Type().Elem().Size()), nil
+		return sizeOfArray(v, cache)
 
 	case reflect.Slice:
-		// return Slice size if this node has been visited already
-		if cache[v.Pointer()] {
-			return uint64(v.Type().Size()), nil
-		}
-		cache[v.Pointer()] = true
-
-		var sum uint64
-		for i := 0; i < v.Len(); i++ {
-			s, err := sizeOf(v.Index(i), cache)
-			if err != nil {
-				return 0, err
-			}
-			sum += s
-		}
-
-		sum += uint64(v.Cap()-v.Len()) * uint64(v.Type().Elem().Size())
-
-		return sum + uint64(v.Type().Size()), nil
+		return sizeOfSlice(v, cache)
 
 	case reflect.Struct:
-		var sum uint64
-		for i, n := 0, v.NumField(); i < n; i++ {
-			s, err := sizeOf(v.Field(i), cache)
-			if err != nil {
-				return 0, err
-			}
-			sum += s
-		}
-
-		// Look for struct padding.
-		padding := uint64(v.Type().Size())
-		for i, n := 0, v.NumField(); i < n; i++ {
-			padding -= uint64(v.Field(i).Type().Size())
-		}
-
-		return (sum + padding), nil
+		return sizeOfStruct(v, cache)
 
 	case reflect.String:
-		s := v.String()
-		data := (*stringHeader)(unsafe.Pointer(&s)).data
-		if cache[data] {
-			return uint64(v.Type().Size()), nil
-		}
-		cache[data] = true
-		return uint64(len(s)) + uint64(v.Type().Size()), nil
+		return sizeOfString(v, cache)
 
 	case reflect.Pointer:
-		sizeOfPointer := uint64(v.Type().Size())
-		if v.IsNil() {
-			return sizeOfPointer, nil
-		}
-		// return Ptr size if this node has been visited already (break infinite recursion)
-		if cache[v.Pointer()] {
-			return sizeOfPointer, nil
-		}
-		cache[v.Pointer()] = true
-		s, err := sizeOf(reflect.Indirect(v), cache)
-		if err != nil {
-			return 0, err
-		}
-		return (s + sizeOfPointer), nil
+		return sizeOfPointer(v, cache)
 
 	case reflect.Bool,
 		reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
@@ -148,13 +88,95 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 		*/
 
 	case reflect.Interface:
-		s, err := sizeOf(v.Elem(), cache)
-		if err != nil {
-			return 0, err
-		}
-		return s + uint64(v.Type().Size()), nil
+		return sizeOfInterface(v, cache)
 	}
 
 	// can currently only be reflect.Map or reflect.Invalid or reflect.UnsafePointer, see type.go
 	return 0, errors.New("unimplemented kind: " + v.Kind().String())
+}
+
+func sizeOfInterface(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	s, err := sizeOf(v.Elem(), cache)
+	if err != nil {
+		return 0, err
+	}
+	return s + uint64(v.Type().Size()), nil
+}
+
+func sizeOfPointer(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	sizeOfPointer := uint64(v.Type().Size())
+	if v.IsNil() {
+		return sizeOfPointer, nil
+	}
+
+	if cache[v.Pointer()] {
+		return sizeOfPointer, nil
+	}
+	cache[v.Pointer()] = true
+	s, err := sizeOf(reflect.Indirect(v), cache)
+	if err != nil {
+		return 0, err
+	}
+	return (s + sizeOfPointer), nil
+}
+
+func sizeOfString(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	s := v.String()
+	data := (*stringHeader)(unsafe.Pointer(&s)).data
+	if cache[data] {
+		return uint64(v.Type().Size()), nil
+	}
+	cache[data] = true
+	return uint64(len(s)) + uint64(v.Type().Size()), nil
+}
+
+func sizeOfStruct(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	var sum uint64
+	for i, n := 0, v.NumField(); i < n; i++ {
+		s, err := sizeOf(v.Field(i), cache)
+		if err != nil {
+			return 0, err
+		}
+		sum += s
+	}
+
+	padding := uint64(v.Type().Size())
+	for i, n := 0, v.NumField(); i < n; i++ {
+		padding -= uint64(v.Field(i).Type().Size())
+	}
+
+	return (sum + padding), nil
+}
+
+func sizeOfSlice(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	if cache[v.Pointer()] {
+		return uint64(v.Type().Size()), nil
+	}
+	cache[v.Pointer()] = true
+
+	var sum uint64
+	for i := 0; i < v.Len(); i++ {
+		s, err := sizeOf(v.Index(i), cache)
+		if err != nil {
+			return 0, err
+		}
+		sum += s
+	}
+
+	sum += uint64(v.Cap()-v.Len()) * uint64(v.Type().Elem().Size())
+	result := sum + uint64(v.Type().Size())
+	return result, nil
+}
+
+func sizeOfArray(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
+	var sum uint64
+	for i := 0; i < v.Len(); i++ {
+		s, err := sizeOf(v.Index(i), cache)
+		if err != nil {
+			return 0, err
+		}
+		sum += s
+	}
+	result := sum + uint64(v.Cap()-v.Len())*uint64(v.Type().Elem().Size())
+	return result, nil
 }
