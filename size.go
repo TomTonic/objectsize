@@ -21,7 +21,8 @@ func Of(v interface{}) (uint64, error) {
 	// Cache with every visited pointer so we don't count two pointers
 	// to the same memory twice.
 	cache := make(map[uintptr]bool)
-	result, err := sizeOf(reflect.Indirect(reflect.ValueOf(v)), cache)
+	vv := reflect.Indirect(reflect.ValueOf(v))
+	result, err := sizeOf(vv, cache)
 	return result, err
 }
 
@@ -94,7 +95,7 @@ func sizeOf(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 		return sizeOfInterface(v, cache)
 	}
 
-	// can currently only be reflect.Map or reflect.Invalid or reflect.UnsafePointer, see type.go
+	// can currently only be reflect.Invalid or reflect.UnsafePointer, see type.go
 	return 0, errors.New("unimplemented kind: " + v.Kind().String())
 }
 

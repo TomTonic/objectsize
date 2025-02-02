@@ -1,13 +1,480 @@
 package objectsize
 
 import (
-	"fmt"
 	"math/rand"
+	"reflect"
 	"runtime"
 	"testing"
 )
 
+const (
+	// Constants for 32-bit architecture
+	expectedMapBaseSize32 = 4 + // hmap.count (int)
+		1 + // hmap.flags
+		1 + // hmap.B
+		2 + // hmap.noverflow
+		4 + // hmap.hash0
+		4 + // hmap.buckets (unsafe.Pointer)
+		4 + // hmap.oldbuckets (unsafe.Pointer)
+		4 + // hmap.nevacuate (uintptr)
+		4 // hmap.extra (*mapextra)
+
+	// Constants for 64-bit architecture
+	expectedMapBaseSize64 = 8 + // hmap.count (int)
+		1 + // hmap.flags
+		1 + // hmap.B
+		2 + // hmap.noverflow
+		4 + // hmap.hash0
+		8 + // hmap.buckets (unsafe.Pointer)
+		8 + // hmap.oldbuckets (unsafe.Pointer)
+		8 + // hmap.nevacuate (uintptr)
+		8 // hmap.extra (*mapextra)
+)
+
+func TestCalcMapBaseSize(t *testing.T) {
+	var expectedSize uint64
+	switch runtime.GOARCH {
+	case "386", "arm", "mips", "mipsle", "wasm":
+		expectedSize = expectedMapBaseSize32
+	case "amd64", "arm64", "ppc64", "ppc64le", "mips64", "mips64le", "s390x":
+		expectedSize = expectedMapBaseSize64
+	default:
+		t.Fatalf("Unsupported architecture: %s", runtime.GOARCH)
+	}
+
+	actualSize := calcMapBaseSize()
+
+	if actualSize != expectedSize {
+		t.Errorf("Expected %d, but got %d", expectedSize, actualSize)
+	}
+}
+
+func TestCompareCalcMapBaseSizeWithMeasurement(t *testing.T) {
+	numberOfMaps := 1000000
+	tolerance := 0.005
+	mapsArray := make([]map[string]int32, numberOfMaps)
+
+	var startMem, endMem runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&startMem)
+
+	for i := range numberOfMaps {
+		mapsArray[i] = map[string]int32{}
+	}
+
+	runtime.GC()
+	runtime.ReadMemStats(&endMem)
+	//usedMem := (endMem.HeapAlloc + endMem.StackInuse + endMem.StackSys) - (startMem.HeapAlloc + startMem.StackInuse + startMem.StackSys)
+	usedMem := endMem.HeapAlloc - startMem.HeapAlloc
+	measuredMemPerMap := float64(usedMem) / float64(numberOfMaps)
+
+	// do something useless with the data to make sure it has not yet been garbage collected
+	zerosum := int64(0)
+	for i := range numberOfMaps {
+		zerosum += int64(len(mapsArray[i]))
+	}
+	if zerosum != 0 {
+		t.Errorf("zerosum not zero (%d)", zerosum)
+	}
+
+	calculatedSizePerMap := calcMapBaseSize()
+
+	if measuredMemPerMap < float64(calculatedSizePerMap)*(1.0-tolerance) {
+		t.Errorf("measuredMemPerMap (%f) below tolerance of %f%% (%f of %d)", measuredMemPerMap, tolerance*100, float64(calculatedSizePerMap)*(1.0-tolerance), calculatedSizePerMap)
+	}
+
+	if measuredMemPerMap > float64(calculatedSizePerMap)*(1.0+tolerance) {
+		t.Errorf("measuredMemPerMap (%f) above tolerance of %f%% (%f of %d)", measuredMemPerMap, tolerance*100, float64(calculatedSizePerMap)*(1.0+tolerance), calculatedSizePerMap)
+	}
+}
+
+func generateRandomInt32Int32Map(size int) map[int32]int32 {
+	randomMap := make(map[int32]int32, size)
+
+	for i := 0; i < size; i++ {
+		key := rand.Int31()
+		value := rand.Int31()
+		randomMap[key] = value
+	}
+
+	return randomMap
+}
+
+func TestGetTotalBucketCountUsingNOverflow(t *testing.T) {
+	tests := []struct {
+		mapInt32Int32       map[int32]int32
+		expectedBucketCount uint64
+	}{
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(5),
+			expectedBucketCount: 1,
+		},
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(9),
+			expectedBucketCount: 2,
+		},
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(50),
+			expectedBucketCount: 8,
+		},
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(415), // buckets x loadfactor -1 : 64*6.5 -1
+			expectedBucketCount: 64,
+		},
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(500), // loadfactor 6.5 -> requires ~77 buckets -> 128 buckets
+			expectedBucketCount: 128,
+		},
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(65536), // loadfactor 6.5 -> requires ~10,082 buckets -> 16,384 buckets
+			expectedBucketCount: 16384,
+		},
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(123456), // loadfactor 6.5 -> requires ~18,993 buckets -> 32,768 buckets
+			expectedBucketCount: 32768,
+		},
+		{
+			mapInt32Int32:       generateRandomInt32Int32Map(234567), // loadfactor 6.5 -> requires ~36,087 buckets -> 65,536 buckets
+			expectedBucketCount: 65536,
+		},
+	}
+	for _, test := range tests {
+
+		totalBucketCount := getTotalBucketCountUsingNOverflow(reflect.Indirect(reflect.ValueOf(test.mapInt32Int32)))
+		expectedCount := test.expectedBucketCount
+
+		if totalBucketCount < expectedCount {
+			t.Errorf("totalBucketCount (%d) below expectedCount (%d)", totalBucketCount, expectedCount)
+		}
+
+		if totalBucketCount > 2*expectedCount {
+			// see func tooManyOverflowBuckets(noverflow uint16, B uint8) bool in golang-1.23/1.23.5-1/src/runtime/map.go
+			// "too many" means (approximately) as many overflow buckets as regular buckets.
+			t.Errorf("totalBucketCount (%d) above 2*expectedCount (%d)", totalBucketCount, expectedCount)
+		}
+	}
+}
+
+func TestCompareTotalBucketCountMethods(t *testing.T) {
+	tests := []struct {
+		mapEntryCount int
+		iterations    int
+		exactlyEqual  bool
+	}{
+		{
+			mapEntryCount: 5,
+			iterations:    100,
+			exactlyEqual:  true,
+		},
+		{
+			mapEntryCount: 9,
+			iterations:    100,
+			exactlyEqual:  true,
+		},
+		{
+			mapEntryCount: 50,
+			iterations:    100,
+			exactlyEqual:  true,
+		},
+		{
+			mapEntryCount: 500,
+			iterations:    100,
+			exactlyEqual:  true,
+		},
+		{
+			mapEntryCount: 1234,
+			iterations:    100,
+			exactlyEqual:  true,
+		},
+		{
+			mapEntryCount: 123456,
+			iterations:    100,
+			exactlyEqual:  true,
+		},
+		{
+			mapEntryCount: 234567,
+			iterations:    100,
+			exactlyEqual:  false,
+		},
+	}
+	for _, test := range tests {
+
+		for nr := range test.iterations {
+			m := generateRandomInt32Int32Map(test.mapEntryCount)
+
+			totalBucketCountUsingNOverflow := getTotalBucketCountUsingNOverflow(reflect.Indirect(reflect.ValueOf(m)))
+			totalBucketCountFollowingOverflowPointers := getTotalBucketCountFollowingOverflowPointers(reflect.Indirect(reflect.ValueOf(m)))
+
+			if test.exactlyEqual {
+				if totalBucketCountUsingNOverflow != totalBucketCountFollowingOverflowPointers {
+					t.Errorf("UsingNOverflow != FollowingOverflowPointers (%d/%d) in iteration %d", totalBucketCountUsingNOverflow, totalBucketCountFollowingOverflowPointers, nr)
+				}
+			} else {
+				// the map contains more than 65536 buckets. in this case noverflow contains only an estimate. there is no point in comparing them exaclty.
+			}
+		}
+	}
+}
+
+func TestCalcBucketSize(t *testing.T) {
+	type MyStruct struct {
+		A int
+		B int32
+		C int64
+		D string
+	}
+
+	tests := []struct {
+		mapType           reflect.Type
+		expectedSize32bit uint64
+		expectedSize64bit uint64
+	}{
+		{
+			mapType:           reflect.TypeOf(map[int]int{}),
+			expectedSize32bit: 1*8 + 4*8 + 4*8 + 4,
+			expectedSize64bit: 1*8 + 8*8 + 8*8 + 8,
+		},
+		{
+			mapType:           reflect.TypeOf(map[int32]int32{}),
+			expectedSize32bit: 1*8 + 4*8 + 4*8 + 4,
+			expectedSize64bit: 1*8 + 4*8 + 4*8 + 8,
+		},
+		{
+			mapType:           reflect.TypeOf(map[int64]int64{}),
+			expectedSize32bit: 1*8 + 8*8 + 8*8 + 4,
+			expectedSize64bit: 1*8 + 8*8 + 8*8 + 8,
+		},
+		{
+			mapType:           reflect.TypeOf(map[int32]int64{}),
+			expectedSize32bit: 1*8 + 4*8 + 8*8 + 4,
+			expectedSize64bit: 1*8 + 4*8 + 8*8 + 8,
+		},
+		{
+			mapType:           reflect.TypeOf(map[int64]int32{}),
+			expectedSize32bit: 1*8 + 8*8 + 4*8 + 4,
+			expectedSize64bit: 1*8 + 8*8 + 4*8 + 8,
+		},
+		{
+			mapType:           reflect.TypeOf(map[int32]string{}),
+			expectedSize32bit: 0, //?
+			expectedSize64bit: 1*8 + 4*8 + 16*8 + 8,
+		},
+		{
+			mapType:           reflect.TypeOf(map[string]int64{}),
+			expectedSize32bit: 0, //?
+			expectedSize64bit: 1*8 + 16*8 + 8*8 + 8,
+		},
+		{
+			mapType:           reflect.TypeOf(map[string]string{}),
+			expectedSize32bit: 0, //?
+			expectedSize64bit: 1*8 + 16*8 + 16*8 + 8,
+		},
+		//        {reflect.TypeOf("a"), reflect.TypeOf("a"), 1*8 + uint64(unsafe.Sizeof(""))*internal_abi_MapBucketCount + uint64(unsafe.Sizeof(""))*internal_abi_MapBucketCount + 4, 1*internal_abi_MapBucketCount + uint64(unsafe.Sizeof(""))*internal_abi_MapBucketCount + uint64(unsafe.Sizeof(""))*internal_abi_MapBucketCount + 8},
+		//        {reflect.TypeOf(MyStruct{}), reflect.TypeOf(MyStruct{}), 1*internal_abi_MapBucketCount + uint64(unsafe.Sizeof(MyStruct{}))*internal_abi_MapBucketCount + uint64(unsafe.Sizeof(MyStruct{}))*internal_abi_MapBucketCount + 4, 1*internal_abi_MapBucketCount + uint64(unsafe.Sizeof(MyStruct{}))*internal_abi_MapBucketCount + uint64(unsafe.Sizeof(MyStruct{}))*internal_abi_MapBucketCount + 8},
+	}
+
+	for _, test := range tests {
+		expectedSize := test.expectedSize32bit
+		if runtime.GOARCH != "386" && runtime.GOARCH != "arm" && runtime.GOARCH != "mips" && runtime.GOARCH != "mipsle" && runtime.GOARCH != "wasm" {
+			expectedSize = test.expectedSize64bit
+		}
+
+		actualSize := calcBucketSize(test.mapType)
+		if actualSize != expectedSize {
+			t.Errorf("For map type %v -> %v, expected %d, but got %d", test.mapType.Key(), test.mapType.Elem(), expectedSize, actualSize)
+		}
+	}
+}
+
+func TestCompareCalcBucketSizeWithMeasurementInt32Int32(t *testing.T) {
+	numberOfMaps := 1000000
+	tolerance := 0.005
+	mapsArray := make([]map[int32]int32, numberOfMaps)
+
+	var startMem, endMem runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&startMem)
+
+	for i := range numberOfMaps {
+		mapsArray[i] = map[int32]int32{int32(1): int32(1)} // create a map with exactly 1 bucket
+	}
+
+	runtime.GC()
+	runtime.ReadMemStats(&endMem)
+	//usedMem := (endMem.HeapAlloc + endMem.StackInuse + endMem.StackSys) - (startMem.HeapAlloc + startMem.StackInuse + startMem.StackSys)
+	usedMem := endMem.HeapAlloc - startMem.HeapAlloc
+	measuredMemPerMap := float64(usedMem) / float64(numberOfMaps)
+
+	// do something useless with the data to make sure it has not yet been garbage collected
+	sum := int64(0)
+	for i := range numberOfMaps {
+		sum += int64(len(mapsArray[i]))
+	}
+	if sum != int64(numberOfMaps) {
+		t.Errorf("sum (%d) wrong, should be %d", sum, numberOfMaps)
+	}
+
+	calculatedSizePerMap := calcMapBaseSize() + calcBucketSize(reflect.TypeOf(map[int32]int32{}))
+
+	if measuredMemPerMap < float64(calculatedSizePerMap)*(1.0-tolerance) {
+		t.Errorf("measuredMemPerMap (%f) below tolerance of %f%% (%f of %d)", measuredMemPerMap, tolerance*100, float64(calculatedSizePerMap)*(1.0-tolerance), calculatedSizePerMap)
+	}
+
+	if measuredMemPerMap > float64(calculatedSizePerMap)*(1.0+tolerance) {
+		t.Errorf("measuredMemPerMap (%f) above tolerance of %f%% (%f of %d)", measuredMemPerMap, tolerance*100, float64(calculatedSizePerMap)*(1.0+tolerance), calculatedSizePerMap)
+	}
+}
+
+func TestCompareCalcBucketSizeWithMeasurementStringInt64(t *testing.T) {
+	numberOfMaps := 1000000
+	tolerance := 0.005
+	mapsArray := make([]map[string]int64, numberOfMaps)
+
+	var startMem, endMem runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&startMem)
+
+	for i := range numberOfMaps {
+		mapsArray[i] = map[string]int64{"arghetjhaetjhajydfaehtytjhatahjtr": int64(1)} // create a map with exactly 1 bucket
+	}
+
+	runtime.GC()
+	runtime.ReadMemStats(&endMem)
+	//usedMem := (endMem.HeapAlloc + endMem.StackInuse + endMem.StackSys) - (startMem.HeapAlloc + startMem.StackInuse + startMem.StackSys)
+	usedMem := endMem.HeapAlloc - startMem.HeapAlloc
+	measuredMemPerMap := float64(usedMem) / float64(numberOfMaps)
+
+	// do something useless with the data to make sure it has not yet been garbage collected
+	sum := int64(0)
+	for i := range numberOfMaps {
+		sum += int64(len(mapsArray[i]))
+	}
+	if sum != int64(numberOfMaps) {
+		t.Errorf("sum (%d) wrong, should be %d", sum, numberOfMaps)
+	}
+
+	calculatedSizePerMap := calcMapBaseSize() + calcBucketSize(reflect.TypeOf(map[string]int64{}))
+
+	if measuredMemPerMap < float64(calculatedSizePerMap)*(1.0-tolerance) {
+		t.Errorf("measuredMemPerMap (%f) below tolerance of %f%% (%f of %d)", measuredMemPerMap, tolerance*100, float64(calculatedSizePerMap)*(1.0-tolerance), calculatedSizePerMap)
+	}
+
+	if measuredMemPerMap > float64(calculatedSizePerMap)*(1.0+tolerance) {
+		t.Errorf("measuredMemPerMap (%f) above tolerance of %f%% (%f of %d)", measuredMemPerMap, tolerance*100, float64(calculatedSizePerMap)*(1.0+tolerance), calculatedSizePerMap)
+	}
+}
+
+func cloneMap[K comparable, V any](m map[K]V) map[K]V {
+	result := make(map[K]V)
+	for k, v := range m {
+		result[k] = v
+	}
+	return result
+}
+
+func makeArray[K comparable, V any](_ map[K]V, length int) []map[K]V {
+	return make([]map[K]V, length)
+}
+
+func TestSizeOfMapInt32Int32(t *testing.T) {
+	numberOfMaps := 100000
+	tolerance := 0.03
+
+	original := generateRandomInt32Int32Map(50)
+
+	mapsArray := makeArray(original, numberOfMaps)
+
+	var startMem, endMem runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&startMem)
+
+	for i := range numberOfMaps {
+		mapsArray[i] = cloneMap(original)
+	}
+
+	runtime.GC()
+	runtime.ReadMemStats(&endMem)
+	//usedMem := (endMem.HeapAlloc + endMem.StackInuse + endMem.StackSys) - (startMem.HeapAlloc + startMem.StackInuse + startMem.StackSys)
+	usedMem := endMem.HeapAlloc - startMem.HeapAlloc
+
+	sum := uint64(0)
+	for i := range numberOfMaps {
+		m := mapsArray[i]
+		s, err := Of(m)
+		if err != nil {
+			t.Errorf("Error getting size of map %d: %v", i, err)
+		} else {
+			sum += s
+		}
+	}
+
+	if float64(usedMem) < float64(sum)*(1.0-tolerance) {
+		t.Errorf("usedMem (%d) below tolerance of %f%% (%f of %d)", usedMem, tolerance*100, float64(sum)*(1.0-tolerance), sum)
+	}
+
+	if float64(usedMem) > float64(sum)*(1.0+tolerance) {
+		t.Errorf("usedMem (%d) above tolerance of %f%% (%f of %d)", usedMem, tolerance*100, float64(sum)*(1.0+tolerance), sum)
+	}
+}
+
 func TestSizeOfMap(t *testing.T) {
+	tests := []struct {
+		name     string
+		original map[int32]int32
+	}{
+		{name: "empty_map[int32]int32", original: map[int32]int32{}},
+		{name: "1_map[int32]int32", original: generateRandomInt32Int32Map(1)},
+		{name: "4_map[int32]int32", original: generateRandomInt32Int32Map(4)},
+		{name: "9_map[int32]int32", original: generateRandomInt32Int32Map(9)},
+		{name: "10_map[int32]int32", original: generateRandomInt32Int32Map(10)},
+		{name: "11_map[int32]int32", original: generateRandomInt32Int32Map(11)},
+		{name: "50_map[int32]int32", original: generateRandomInt32Int32Map(50)},
+	}
+
+	numberOfMaps := 100000
+	tolerance := 0.01
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mapsArray := makeArray(test.original, numberOfMaps)
+
+			var startMem, endMem runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&startMem)
+
+			for i := range numberOfMaps {
+				mapsArray[i] = cloneMap(test.original)
+			}
+
+			runtime.GC()
+			runtime.ReadMemStats(&endMem)
+			//usedMem := (endMem.HeapAlloc + endMem.StackInuse + endMem.StackSys) - (startMem.HeapAlloc + startMem.StackInuse + startMem.StackSys)
+			usedMem := endMem.HeapAlloc - startMem.HeapAlloc
+
+			sum := uint64(0)
+			for i := range numberOfMaps {
+				m := mapsArray[i]
+				s, err := Of(m)
+				if err != nil {
+					t.Errorf("Error getting size of map %d: %v", i, err)
+				} else {
+					sum += s
+				}
+			}
+
+			if float64(usedMem) < float64(sum)*(1.0-tolerance) {
+				t.Errorf("usedMem (%d) below tolerance of %f%% (%f of %d)", usedMem, tolerance*100, float64(sum)*(1.0-tolerance), sum)
+			}
+
+			if float64(usedMem) > float64(sum)*(1.0+tolerance) {
+				t.Errorf("usedMem (%d) above tolerance of %f%% (%f of %d)", usedMem, tolerance*100, float64(sum)*(1.0+tolerance), sum)
+			}
+		})
+	}
+}
+
+/*
+func TestSizeOfMapOld(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    interface{}
@@ -172,3 +639,4 @@ func TestSizeOfMapManytimes(t *testing.T) {
 		})
 	}
 }
+*/
