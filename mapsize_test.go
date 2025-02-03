@@ -380,7 +380,8 @@ func TestSizeOfMapInt32Int32(t *testing.T) {
 	numberOfMaps := 100000
 	tolerance := 0.03
 
-	original := generateRandomInt32Int32Map(50)
+	original := generateRandomInt32Int32Map(52) // this one will pass with 3% tolerance, as 52/6.5=8
+	//original := generateRandomInt32Int32Map(53) // this one will fail with 3% tolerance
 
 	mapsArray := makeArray(original, numberOfMaps)
 
@@ -409,11 +410,11 @@ func TestSizeOfMapInt32Int32(t *testing.T) {
 	}
 
 	if float64(usedMem) < float64(sum)*(1.0-tolerance) {
-		t.Errorf("usedMem (%d) below tolerance of %f%% (%f of %d)", usedMem, tolerance*100, float64(sum)*(1.0-tolerance), sum)
+		t.Errorf("usedMem (%d) is %f%% of calculated value (%d).\nCalculated average map size was %f bytes.\nActual consumption was %f bytes per map lower.", usedMem, float64(usedMem)*100/float64(sum), sum, float64(sum)/float64(numberOfMaps), float64(sum-usedMem)/float64(numberOfMaps))
 	}
 
 	if float64(usedMem) > float64(sum)*(1.0+tolerance) {
-		t.Errorf("usedMem (%d) above tolerance of %f%% (%f of %d)", usedMem, tolerance*100, float64(sum)*(1.0+tolerance), sum)
+		t.Errorf("usedMem (%d) is %f%% of calculated value (%d).\nCalculated average map size was %f bytes.\nActual consumption was %f bytes per map higher.", usedMem, float64(usedMem)*100/float64(sum), sum, float64(sum)/float64(numberOfMaps), float64(usedMem-sum)/float64(numberOfMaps))
 	}
 }
 
