@@ -378,10 +378,11 @@ func makeArray[K comparable, V any](_ map[K]V, length int) []map[K]V {
 
 func TestSizeOfMapInt32Int32(t *testing.T) {
 	numberOfMaps := 100000
-	tolerance := 0.03
+	tolerance := 0.01
 
-	original := generateRandomInt32Int32Map(52) // this one will pass with 3% tolerance, as 52/6.5=8
+	//original := generateRandomInt32Int32Map(52) // this one will pass with 3% tolerance, as 52/6.5=8
 	//original := generateRandomInt32Int32Map(53) // this one will fail with 3% tolerance
+	original := generateRandomInt32Int32Map(12)
 
 	mapsArray := makeArray(original, numberOfMaps)
 

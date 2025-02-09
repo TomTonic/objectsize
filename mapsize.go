@@ -23,15 +23,25 @@ func calcMapBaseSize() uint64 {
 }
 
 func calcBucketSize(mapType reflect.Type) uint64 {
-	var ptr uintptr
 	keyType := mapType.Key()
 	valueType := mapType.Elem()
 
 	result := uint64(1) * internal_abi_MapBucketCount                // bmap.tophash[]
 	result += uint64(keyType.Size()) * internal_abi_MapBucketCount   // bmap."keys[]"
 	result += uint64(valueType.Size()) * internal_abi_MapBucketCount // bmap."values[]"
-	result += uint64(unsafe.Sizeof(ptr))                             // bmap."overflow"
+	result += uint64(unsafe.Sizeof(uintptr(0)))                      // bmap."overflow"
 
+	return result
+}
+
+func calcOverflowPtrOffset(mapType reflect.Type) uintptr {
+	keyType := mapType.Key()
+	valueType := mapType.Elem()
+
+	result := uintptr(1) * internal_abi_MapBucketCount                // bmap.tophash[]
+	result += uintptr(keyType.Size()) * internal_abi_MapBucketCount   // bmap."keys[]"
+	result += uintptr(valueType.Size()) * internal_abi_MapBucketCount // bmap."values[]"
+	// next field is bmap."overflow"
 	return result
 }
 
@@ -114,10 +124,11 @@ func sizeOfExtra(extra *mapextra) uint64 {
 	if extra == nil {
 		return 0
 	}
-	sum := uint64(0)
-	sum += uint64(unsafe.Sizeof(extra.overflow))
-	sum += uint64(unsafe.Sizeof(extra.oldoverflow))
-	sum += uint64(unsafe.Sizeof(extra.nextOverflow))
+	//sum := uint64(0)
+	//sum += uint64(unsafe.Sizeof(extra.overflow))
+	//sum += uint64(unsafe.Sizeof(extra.oldoverflow))
+	//sum += uint64(unsafe.Sizeof(extra.nextOverflow))
+	sum := 3 * uint64(unsafe.Sizeof(uintptr(0)))
 	if extra.overflow != nil {
 		sum += uint64(len(*extra.overflow)) * uint64(unsafe.Sizeof(uintptr(0)))
 	}
@@ -143,6 +154,26 @@ func sizeOfMap(v reflect.Value, cache map[uintptr]bool) (uint64, error) {
 	hmapPtr := (*hmap)(mapPointer)
 
 	result += sizeOfExtra(hmapPtr.extra)
+
+	if hmapPtr.extra != nil && hmapPtr.extra.nextOverflow != nil {
+		// there are more reserve buckets from the initial array allocation
+		// than we found by counting the buckets following the Overflow pointers
+		// -> walk them until we find one that has an non-nil nextOverflow ptr
+		// (see func (h *hmap) newoverflow(t *maptype, b *bmap) *bmap of golang-1.23/1.23.5-1/src/runtime/map.go)
+		bucketSize := calcBucketSize(v.Type())
+		overflowPtrOffset := calcOverflowPtrOffset(v.Type())
+		var ovf *bmap
+		ovf = hmapPtr.extra.nextOverflow
+		nextptrval := nextOverflowBucket(ovf, overflowPtrOffset)
+		reserveBucketsCounter := uint64(1)
+		for nextptrval == nil {
+			reserveBucketsCounter++
+			// We're not at the end of the preallocated overflow buckets. Bump the pointer.
+			ovf = (*bmap)(unsafe.Add(unsafe.Pointer(ovf), uintptr(bucketSize)))
+			nextptrval = nextOverflowBucket(ovf, overflowPtrOffset)
+		}
+		result += reserveBucketsCounter * bucketSize
+	}
 
 	// TODO: Descend into object trees if keys/values are not stored directly in the hashmap
 	/*
