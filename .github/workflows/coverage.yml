@@ -11,15 +11,15 @@ jobs:
       contents: write
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f # v2.10.2
+        uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version-file: go.mod
 
@@ -27,7 +27,7 @@ jobs:
         run: go test ./... -coverprofile=./cover.out -covermode=atomic -coverpkg=./...
 
       - name: Generate coverage badge
-        uses: vladopajic/go-test-coverage@ec316bf6e55f711fb8ff23ca68b5711e2e9fa1a0 # v2.10.6
+        uses: vladopajic/go-test-coverage@679e6807f68f2440a4c43d386442a1d0041838a9 # v2.18.3
         with:
           profile: cover.out
           local-prefix: github.com/TomTonic/objectsize
